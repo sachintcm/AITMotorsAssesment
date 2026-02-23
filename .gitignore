@@ -1,0 +1,5 @@
+bin/
+obj/
+test_data/
+test_receive/
+*.o

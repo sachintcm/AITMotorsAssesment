@@ -6,7 +6,8 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <netinet/in.h>
-#include <openssl/sha.h>
+#include <arpa/inet.h>
+#include <openssl/evp.h>
 #include <errno.h>
 
 /* Receive file from client with integrity checking */
@@ -58,7 +59,7 @@ int receive_file(int port, const char *save_path) {
 
     /* Receive filename */
     char filename[MAX_FILENAME];
-    received = recv(client_sock, filename, sizeof(filename), 0);
+    received = recv(client_sock, filename, sizeof(filename)-1, 0);
     if (received <= 0) {
         perror("Failed to receive filename");
         close(client_sock);
@@ -80,8 +81,21 @@ int receive_file(int port, const char *save_path) {
     }
 
     /* Calculate hash while receiving data */
-    SHA256_CTX sha256_ctx;
-    SHA256_Init(&sha256_ctx);
+    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+    if (!ctx) {
+        perror("EVP_MD_CTX_new failed");
+        close(client_sock);
+        close(server_sock);
+        return ERR_MEMORY;
+    }
+
+    if (EVP_DigestInit_ex(ctx, EVP_sha256(), NULL) != 1) {
+        perror("EVP_DigestInit_ex failed");
+        EVP_MD_CTX_free(ctx);
+        close(client_sock);
+        close(server_sock);
+        return ERR_MEMORY;
+    }
 
     uint64_t total_received = 0;
     unsigned char buffer[BUFFER_SIZE];
@@ -102,7 +116,15 @@ int receive_file(int port, const char *save_path) {
         }
 
         fwrite(buffer, 1, received, file);
-        SHA256_Update(&sha256_ctx, buffer, received);
+        if (EVP_DigestUpdate(ctx, buffer, received) != 1) {
+            perror("EVP_DigestUpdate failed");
+            fclose(file);
+            unlink(full_path);
+            EVP_MD_CTX_free(ctx);
+            close(client_sock);
+            close(server_sock);
+            return ERR_MEMORY;
+        }
         total_received += received;
 
         /* Progress indicator */
@@ -136,7 +158,16 @@ int receive_file(int port, const char *save_path) {
 
     /* Finalize hash calculation */
     uint8_t calculated_hash[HASH_SIZE];
-    SHA256_Final(calculated_hash, &sha256_ctx);
+    if (EVP_DigestFinal_ex(ctx, calculated_hash, NULL) != 1) {
+        perror("EVP_DigestFinal_ex failed");
+        unlink(full_path);
+        EVP_MD_CTX_free(ctx);
+        close(client_sock);
+        close(server_sock);
+        return ERR_MEMORY;
+    }
+
+    EVP_MD_CTX_free(ctx);
 
     /* Compare hashes */
     if (memcmp(calculated_hash, header.hash, HASH_SIZE) != 0) {

@@ -7,7 +7,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
-#include <openssl/sha.h>
+#include <openssl/evp.h>
 #include <errno.h>
 
 /* Calculate SHA256 hash for integrity verification */
@@ -18,17 +18,40 @@ int calculate_sha256(const char *filename, uint8_t *hash) {
         return ERR_FILE_NOT_FOUND;
     }
 
-    SHA256_CTX sha256_ctx;
-    SHA256_Init(&sha256_ctx);
+    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+    if (!ctx) {
+        perror("EVP_MD_CTX_new failed");
+        fclose(file);
+        return ERR_MEMORY;
+    }
+
+    if (EVP_DigestInit_ex(ctx, EVP_sha256(), NULL) != 1) {
+        perror("EVP_DigestInit_ex failed");
+        EVP_MD_CTX_free(ctx);
+        fclose(file);
+        return ERR_MEMORY;
+    }
 
     unsigned char buffer[BUFFER_SIZE];
     size_t bytes_read;
 
     while ((bytes_read = fread(buffer, 1, BUFFER_SIZE, file)) > 0) {
-        SHA256_Update(&sha256_ctx, buffer, bytes_read);
+        if (EVP_DigestUpdate(ctx, buffer, bytes_read) != 1) {
+            perror("EVP_DigestUpdate failed");
+            EVP_MD_CTX_free(ctx);
+            fclose(file);
+            return ERR_MEMORY;
+        }
     }
 
-    SHA256_Final(hash, &sha256_ctx);
+    if (EVP_DigestFinal_ex(ctx, hash, NULL) != 1) {
+        perror("EVP_DigestFinal_ex failed");
+        EVP_MD_CTX_free(ctx);
+        fclose(file);
+        return ERR_MEMORY;
+    }
+
+    EVP_MD_CTX_free(ctx);
     fclose(file);
 
     return ERR_OK;
